@@ -1,6 +1,6 @@
 use crate::entities::*;
 use crate::errors::*;
-use soroban_sdk::{contract, contractimpl, log, token, Address, Env};
+use soroban_sdk::{contract, contractimpl, log, token, Symbol, Address, Env};
 
 pub const DAY_IN_SECONDS: u64 = 86400;
 
@@ -10,6 +10,7 @@ pub struct HoldBackContract;
 #[contractimpl]
 impl HoldBackContract {
     pub fn initialize(env: &Env, admin: Address) -> Result<bool, Error> {
+        admin.require_auth();
         if env.storage().persistent().has(&DataKey::Admin) {
             return Err(Error::AlreadyInitialized);
         }
@@ -33,7 +34,7 @@ impl HoldBackContract {
             .get(&DataKey::Admin)
             .ok_or(Error::NotInitialized)?;
 
-        if amount == 0 || amount > u128::MAX {
+        if amount == 0 || amount as i128 > i128::MAX {
             return Err(Error::InvalidAmount);
         }
         if holdback_rate == 0 || holdback_rate > 100 {
@@ -52,7 +53,16 @@ impl HoldBackContract {
             .ok_or(Error::InvalidAmount)?;
 
         let token_client = token::Client::new(&env, &token);
-        token_client.transfer_from(&env.current_contract_address(), &buyer, &env.current_contract_address(), &(amount as i128));
+        let bal = token_client.balance(&buyer);
+        if bal < amount as i128 {
+            return Err(Error::InsufficientBalance);
+        }
+        let allowance = token_client.allowance(&buyer, &env.current_contract_address());
+        if allowance < amount as i128 {
+            return Err(Error::InsufficientAllowance);
+        }
+        token_client
+            .transfer_from(&env.current_contract_address(), &buyer, &env.current_contract_address(), &(amount as i128));
 
         if final_amount > 0 {
             token_client.transfer(
@@ -73,6 +83,12 @@ impl HoldBackContract {
         env.storage()
             .persistent()
             .set(&DataKey::TransactionCounter, &transaction_id);
+        
+        let release_time = env.ledger()
+            .timestamp()
+            .checked_add((holdback_days as u64).saturating_mul(DAY_IN_SECONDS))
+            .ok_or(Error::InvalidAmount)?;
+
 
         let transaction = Transaction {
             buyer: buyer.clone(),
@@ -82,15 +98,20 @@ impl HoldBackContract {
             holdback_rate,
             holdback_amount,
             final_amount,
-            release_time: env.ledger().timestamp() + (holdback_days as u64 * DAY_IN_SECONDS),
+            release_time,
             status: TransactionStatus::Held,
         };
         env.storage()
             .persistent()
             .set(&DataKey::Transaction(transaction_id), &transaction);
 
+        // env.events().publish(
+        //     ("transaction_created",),
+        //     (transaction_id, buyer, seller, amount, holdback_amount),
+        // );
+        // 
         env.events().publish(
-            ("transaction_created",),
+            (Symbol::short("tx_created"),),
             (transaction_id, buyer, seller, amount, holdback_amount),
         );
 
@@ -221,9 +242,9 @@ impl HoldBackContract {
             .persistent()
             .get(&DataKey::Transaction(transaction_id))
             .ok_or(Error::TransactionNotFound)?;
-        if transaction.status != TransactionStatus::Held
-            && transaction.status != TransactionStatus::HoldbackPending
-        {
+        // if transaction.status != TransactionStatus::Held
+        // || transaction.status != TransactionStatus::HoldbackPending
+        if matches!(transaction.status, TransactionStatus::Disputed) {
             return Err(Error::InvalidStatus);
         }
 

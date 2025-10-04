@@ -1,4 +1,3 @@
-
 use soroban_sdk::contracterror;
 
 #[contracterror]
@@ -13,6 +12,10 @@ pub enum Error {
     InvalidStatus = 7,
     Unauthorized = 8,
     AlreadyInitialized = 9,
-    Paused = 10,
-    RateLimitExceeded = 11,
+    InsufficientBalance = 10,
+    InvalidHoldbackDays = 11,
+    RateLimitExceeded = 12,
+    Paused = 13,
+    TransferFailed = 14,
+    InsufficientAllowance = 15,
 }
